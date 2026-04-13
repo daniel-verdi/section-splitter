@@ -1,0 +1,22 @@
+# Protect sensitive directories
+<FilesMatch "^\.">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Protect includes directory
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^includes/ - [F,L]
+    RewriteRule ^scripts/ - [F,L]
+    RewriteRule ^database/ - [F,L]
+</IfModule>
+
+# Prevent directory listing
+Options -Indexes
+
+# Protect export files (allow only admin access)
+<Directory "exports">
+    Order deny,allow
+    Deny from all
+</Directory>
