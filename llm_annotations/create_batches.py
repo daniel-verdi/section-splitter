@@ -7,35 +7,17 @@
 
 # Setup and configurations
 
-import os
+import argparse
 import json
-import time
+from pathlib import Path
 import pandas as pd
 import tiktoken
-from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
-client = OpenAI()
-
-# --- DATA ---
-FILE_PATH        = "auto_eval_sample.parquet"
 PAPER_ID_COL     = 'corpusid'
 HEADER_COL       = 'extracted'
 CONTENT_COL      = 'section_text'
-
-# --- MODEL ---
-MODEL_NAME       = "gpt-5-mini"
-TOKEN_LIMIT      = 300   # max tokens per content snippet
-
-# --- BATCHING ---
-# Stay below the 2M enqueued-token hard limit
-BATCH_TOKEN_LIMIT   = 1_800_000
-BATCH_OUTPUT_DIR    = "batch_input"
-BATCH_OUTPUT_BASE   = os.path.join(BATCH_OUTPUT_DIR, "batch_input")   # → batch_input_1.jsonl, etc.
-RESULTS_OUTPUT_DIR  = "output"
-
-os.makedirs(RESULTS_OUTPUT_DIR, exist_ok=True)
 
 # --- MODEL PARAMETERS (static per request) ---
 MODEL_PARAMETERS = {
@@ -64,8 +46,6 @@ MODEL_PARAMETERS = {
     "tools": [],
     "store": True
 }
-
-print("✅ Configuration done.")
 
 # --- PROMPT ---
 PROMPT_TEMPLATE = """
@@ -139,102 +119,155 @@ We use the publicly available ImageNet (ILSVRC 2012) dataset, which consists of 
 *Response:*
 """
 
-# Prepare/create the batch input files
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Create OpenAI Batch API JSONL files from an annotation sample."
+    )
+    parser.add_argument(
+        "--input-file",
+        type=Path,
+        default=Path("auto_eval_sample.parquet"),
+        help="Parquet sample to convert into batch requests.",
+    )
+    parser.add_argument(
+        "--batch-output-dir",
+        type=Path,
+        default=Path("batch_input"),
+        help="Directory where batch_input_N.jsonl files are written.",
+    )
+    parser.add_argument(
+        "--results-output-dir",
+        type=Path,
+        default=Path("output"),
+        help="Directory reserved for Batch API outputs.",
+    )
+    parser.add_argument(
+        "--model",
+        default="gpt-5-mini",
+        help="OpenAI model name to include in each request body.",
+    )
+    parser.add_argument(
+        "--token-limit",
+        type=int,
+        default=300,
+        help="Maximum content snippet length in tokens.",
+    )
+    parser.add_argument(
+        "--batch-token-limit",
+        type=int,
+        default=1_800_000,
+        help="Maximum estimated prompt tokens per JSONL batch file.",
+    )
+    return parser.parse_args()
 
-try:
-    encoding = tiktoken.get_encoding("o200k_base")
-except Exception as e:
-    print(f"Error getting tokenizer: {e}")
-    exit()
 
-# Load and filter data
-df = pd.read_parquet(FILE_PATH)
-print(f"✅ Loaded {len(df)} rows.")
-
-# Remove irrelevant sections - we don't need the LLM to label those, it would just waste tokens and budget
-df = df[
-    (df[CONTENT_COL].str.strip() != "") &
-    (~df['sec_label_extended'].isin(['figure_table', 'ending', 'other']))
-]
-print(f"   After filtering: {len(df)} rows.")
-
-def write_batch_file(requests_list: list, file_counter: int, base_name: str) -> str:
+def write_batch_file(requests_list: list, file_counter: int, base_name: Path) -> str:
     """Write a list of request dicts to a numbered JSONL file. Returns the filename."""
-    filename = f"{base_name}_{file_counter}.jsonl"
-    with open(filename, "w") as f:
+    filename = base_name.parent / f"{base_name.name}_{file_counter}.jsonl"
+    with filename.open("w") as f:
         for req in requests_list:
             f.write(json.dumps(req) + "\n")
     print(f"  ✅ {filename}  ({len(requests_list)} requests)")
-    return filename
+    return str(filename)
 
 
-all_input_data    = []   # for mapping results back to originals
-batch_filenames   = []   # list of written JSONL paths
+def main() -> None:
+    """Prepare/create the batch input files."""
+    args = parse_args()
+    args.batch_output_dir.mkdir(parents=True, exist_ok=True)
+    args.results_output_dir.mkdir(parents=True, exist_ok=True)
+    batch_output_base = args.batch_output_dir / "batch_input"
 
-file_counter          = 1
-current_batch_reqs    = []
-current_batch_tokens  = 0
-total_requests        = 0
+    print("✅ Configuration done.")
 
-print("\nPreparing batch files...")
-for paper_id, group in df.groupby(PAPER_ID_COL):
-    group = group.reset_index(drop=True)
+    try:
+        encoding = tiktoken.get_encoding("o200k_base")
+    except Exception as e:
+        print(f"Error getting tokenizer: {e}")
+        exit()
 
-    for index, row in group.iterrows():
-        # Build header context windows
-        prev_headers = group.iloc[max(0, index - 5):index][HEADER_COL].tolist()
-        next_headers = group.iloc[index + 1:min(len(group), index + 6)][HEADER_COL].tolist()
-        prev_str = "\n".join(f" - {h} " for h in prev_headers)
-        next_str = "\n".join(f" - {h} " for h in next_headers)
+    # Load and filter data
+    df = pd.read_parquet(args.input_file)
+    print(f"✅ Loaded {len(df)} rows from {args.input_file}.")
 
-        # Truncate content snippet
-        full_content = str(row[CONTENT_COL])
-        tokens = encoding.encode(full_content)
-        snippet = encoding.decode(tokens[:TOKEN_LIMIT]) if len(tokens) > TOKEN_LIMIT else full_content
+    # Remove irrelevant sections - we don't need the LLM to label those, it would just waste tokens and budget
+    df = df[
+        (df[CONTENT_COL].str.strip() != "") &
+        (~df['sec_label_extended'].isin(['figure_table', 'ending', 'other']))
+    ]
+    print(f"   After filtering: {len(df)} rows.")
 
-        # Format prompt
-        prompt = PROMPT_TEMPLATE.format(
-            previous_headers_list=prev_str,
-            section_content_snippet=snippet,
-            following_headers_list=next_str
-        )
-        prompt_tokens = len(encoding.encode(prompt))
+    all_input_data    = []   # for mapping results back to originals
+    batch_filenames   = []   # list of written JSONL paths
 
-        # Split into a new file if we'd exceed the token limit
-        if current_batch_reqs and (current_batch_tokens + prompt_tokens > BATCH_TOKEN_LIMIT):
-            batch_filenames.append(
-                write_batch_file(current_batch_reqs, file_counter, BATCH_OUTPUT_BASE)
+    file_counter          = 1
+    current_batch_reqs    = []
+    current_batch_tokens  = 0
+    total_requests        = 0
+
+    print("\nPreparing batch files...")
+    for paper_id, group in df.groupby(PAPER_ID_COL):
+        group = group.reset_index(drop=True)
+
+        for index, row in group.iterrows():
+            # Build header context windows
+            prev_headers = group.iloc[max(0, index - 5):index][HEADER_COL].tolist()
+            next_headers = group.iloc[index + 1:min(len(group), index + 6)][HEADER_COL].tolist()
+            prev_str = "\n".join(f" - {h} " for h in prev_headers)
+            next_str = "\n".join(f" - {h} " for h in next_headers)
+
+            # Truncate content snippet
+            full_content = str(row[CONTENT_COL])
+            tokens = encoding.encode(full_content)
+            snippet = encoding.decode(tokens[:args.token_limit]) if len(tokens) > args.token_limit else full_content
+
+            # Format prompt
+            prompt = PROMPT_TEMPLATE.format(
+                previous_headers_list=prev_str,
+                section_content_snippet=snippet,
+                following_headers_list=next_str
             )
-            file_counter += 1
-            current_batch_reqs   = []
-            current_batch_tokens = 0
+            prompt_tokens = len(encoding.encode(prompt))
 
-        custom_id = f"{paper_id}-{index}"
+            # Split into a new file if we'd exceed the token limit
+            if current_batch_reqs and (current_batch_tokens + prompt_tokens > args.batch_token_limit):
+                batch_filenames.append(
+                    write_batch_file(current_batch_reqs, file_counter, batch_output_base)
+                )
+                file_counter += 1
+                current_batch_reqs   = []
+                current_batch_tokens = 0
 
-        request_data = {
-            "custom_id": custom_id,
-            "method": "POST",
-            "url": "/v1/responses",
-            "body": {
-                "model": MODEL_NAME,
-                "input": [{
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}]
-                }],
-                **MODEL_PARAMETERS
+            custom_id = f"{paper_id}-{index}"
+
+            request_data = {
+                "custom_id": custom_id,
+                "method": "POST",
+                "url": "/v1/responses",
+                "body": {
+                    "model": args.model,
+                    "input": [{
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": prompt}]
+                    }],
+                    **MODEL_PARAMETERS
+                }
             }
-        }
 
-        current_batch_reqs.append(request_data)
-        current_batch_tokens += prompt_tokens
-        total_requests += 1
-        all_input_data.append({"custom_id": custom_id, "original_header": row[HEADER_COL]})
+            current_batch_reqs.append(request_data)
+            current_batch_tokens += prompt_tokens
+            total_requests += 1
+            all_input_data.append({"custom_id": custom_id, "original_header": row[HEADER_COL]})
 
-# Write last batch
-if current_batch_reqs:
-    batch_filenames.append(
-        write_batch_file(current_batch_reqs, file_counter, BATCH_OUTPUT_BASE)
-    )
+    # Write last batch
+    if current_batch_reqs:
+        batch_filenames.append(
+            write_batch_file(current_batch_reqs, file_counter, batch_output_base)
+        )
 
-input_df = pd.DataFrame(all_input_data)
-print(f"\n✅ Done. {total_requests} total requests across {len(batch_filenames)} batch file(s).")
+    print(f"\n✅ Done. {total_requests} total requests across {len(batch_filenames)} batch file(s).")
+
+
+if __name__ == "__main__":
+    main()
