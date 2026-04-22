@@ -162,9 +162,18 @@ memory during conversion, see [Reproducibility Notes](#reproducibility-notes).
 
 ### 3. Classify Sections
 
-Run the rule-based section classifier on each Parquet input part produced in
-step 2. The classifier is designed to process one input file at a time and write
-matching outputs under the same output directory.
+Run the rule-based section classifier on the Parquet output from step 2. The
+classifier can read a folder of Parquet files directly:
+
+```bash
+python section_classifier.py \
+  --input s2orc.parquet \
+  --output_dir classifier_output
+```
+
+This treats the whole folder as one Polars scan and writes one set of output
+files named after the input folder. For large runs, processing one Parquet file
+at a time is often easier to monitor and less risky for memory usage:
 
 ```bash
 python section_classifier.py \
@@ -172,7 +181,7 @@ python section_classifier.py \
   --output_dir classifier_output
 ```
 
-To process every generated part, loop over the Parquet files:
+To process every generated part separately, loop over the Parquet files:
 
 ```bash
 for input_file in s2orc.parquet/*.parquet; do
@@ -197,6 +206,36 @@ The classifier writes three output datasets under the output directory:
 - `aggregated.parquet/`: section text aggregated by paper and label.
 - `filtered.parquet/`: final filtered sections used for downstream analysis.
 
+### 4. Generate Annotation Samples
+
+Generate deterministic samples from `classified.parquet` for downstream LLM and
+human annotation. The sampler hashes `corpusid`, so the same inputs, seed, and
+sampling rates produce the same paper samples.
+
+```bash
+python evaluations/create_samples.py \
+  --classified-dir classifier_output/classified.parquet \
+  --output-dir samples
+```
+
+This writes:
+
+- `samples/auto_eval_sample.parquet`: larger sample for LLM batch annotation.
+- `samples/manual_eval_sample.parquet`: filtered human annotation sample.
+- `samples/manual_eval_sample.csv`: CSV version for the human annotation
+  workflow.
+
+The defaults use hash seed `33`, an LLM sampling modulus of `10000`, and a human
+sampling modulus of `100000`. To also write the human CSV directly into the
+Prolific annotation folder, pass an extra output path:
+
+```bash
+python evaluations/create_samples.py \
+  --classified-dir classifier_output/classified.parquet \
+  --output-dir samples \
+  --manual-csv-output prolific_annotations/sample_100.csv
+```
+
 ## Evaluation And Annotation Workflows
 
 ### Optional LLM Annotation
@@ -204,14 +243,21 @@ The classifier writes three output datasets under the output directory:
 The `llm_annotations/` workflow prepares sampled rows for the OpenAI Batch API:
 
 ```bash
+python llm_annotations/create_batches.py \
+  --input-file samples/auto_eval_sample.parquet \
+  --batch-output-dir llm_annotations/batch_input \
+  --results-output-dir llm_annotations/output
+```
+
+Then submit the generated batch files:
+
+```bash
 cd llm_annotations
-python create_batches.py
 python call_api.py
 ```
 
-`create_batches.py` reads `auto_eval_sample.parquet` and writes JSONL requests
-to `batch_input/`. `call_api.py` submits those files and stores timestamped
-results in `output/`.
+`create_batches.py` writes JSONL requests to `batch_input/`. `call_api.py`
+submits those files and stores timestamped results in `output/`.
 
 ### Optional Prolific Annotation
 
@@ -220,6 +266,10 @@ tool for human labels. Follow
 [`prolific_annotations/interface/README.md`](prolific_annotations/interface/README.md)
 to create the database, import paper sections, configure credentials, and export
 annotations.
+
+Use `samples/manual_eval_sample.csv` as the input CSV for the human annotation
+interface. The interface README includes a local smoke-test flow using the
+included sample data.
 
 ### Optional Evaluation
 
