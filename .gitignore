@@ -1,0 +1,9 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# Large generated S2ORC data
+/s2orc/
+/s2orc.parquet/
+classifier_output*/
