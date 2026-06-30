@@ -20,7 +20,7 @@ evaluation notebooks used during analysis.
 
 ## Associated Paper
 
-A PDF of the preprint is available on this repository: [here]([url](https://github.com/daniel-verdi/section-splitter/blob/main/preprint.pdf))
+A PDF of the preprint is available on this repository: [here](https://github.com/daniel-verdi/section-splitter/blob/main/preprint.pdf)
 
 ## Data Release
 
