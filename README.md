@@ -28,7 +28,7 @@ TODO: add paper title, venue, DOI, and/or preprint link.
 
 ## Data Release
 
-TODO: add data release DOI or repository link.
+You can find the labeled data here: https://doi.org/10.5281/zenodo.20814302
 
 This project uses [S2ORC: The Semantic Scholar Open Research Corpus](https://github.com/allenai/s2orc).
 Raw S2ORC files are downloaded from Semantic Scholar and are not redistributed
