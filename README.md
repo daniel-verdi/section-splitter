@@ -20,11 +20,7 @@ evaluation notebooks used during analysis.
 
 ## Associated Paper
 
-TODO: add paper title, venue, DOI, and/or preprint link.
-
-- *TODO: add paper title*
-  Daniel Verdi, Jacob Aarup Dalsgaard, Roberta Sinatra
-  TODO: add DOI/arXiv/preprint link
+A PDF of the preprint is available on this repository: [here]([url](https://github.com/daniel-verdi/section-splitter/blob/main/preprint.pdf))
 
 ## Data Release
 
@@ -318,27 +314,3 @@ export POLARS_STREAMING_CHUNK_SIZE=10000
 Start with one variable at a time if you know which Polars version you are
 using; setting both is a pragmatic fallback when reproducing the pipeline across
 different environments.
-
-## Citation
-
-If you use this repository, please cite the associated paper.
-
-```bibtex
-@article{TODO,
-  title = {TODO: add paper title},
-  author = {Verdi, Daniel and Dalsgaard, Jacob Aarup and Sinatra, Roberta},
-  year = {TODO},
-  doi = {TODO}
-}
-```
-
-Upstream data resources should also be cited where appropriate, especially
-S2ORC and Semantic Scholar.
-
-## License
-
-TODO: add repository license information.
-
-## Contact
-
-TODO: add contact details or preferred issue-reporting route.
