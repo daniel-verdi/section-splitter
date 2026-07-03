@@ -254,6 +254,21 @@ exact_match_map = {
     "table":"figure_table"
 }
 
+# Optional annotations for exact headers that span multiple canonical sections.
+alternative_section_label_map = {
+    "results and discussion": "results and discussion",
+    "results and discussions": "results and discussion",
+    "result and discussion": "results and discussion",
+    "discussion and conclusion": "discussion and conclusion",
+    "discussion and conclusions": "discussion and conclusion",
+    "introduction and literature review": "introduction and lit review",
+    "introduction and related work": "introduction and lit review",
+    "background and literature review": "introduction and lit review",
+    "background and related work": "introduction and lit review",
+    "literature review and introduction": "introduction and lit review",
+    "related work and introduction": "introduction and lit review",
+}
+
 # Define regex mapping, which will be used to search for words/terms in the headers
 section_regex_map = {
 
@@ -498,6 +513,12 @@ def initial_mapping(lf: pl.LazyFrame) -> pl.LazyFrame:
 
     # Based on the "exact match" logic
     section_exact_match=pl.col('extracted').replace_strict(exact_match_map, default=None),
+
+    # Optional annotation for exact headers that span multiple canonical sections.
+    section_alt_label=pl.col('extracted').replace_strict(
+        alternative_section_label_map,
+        default=None,
+    ),
     
     ).with_columns(
         # creates sec_map as the value of either exact or contains match columns
