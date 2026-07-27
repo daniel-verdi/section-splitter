@@ -781,32 +781,80 @@ def calculate_section_proportions(lf: pl.LazyFrame) -> pl.LazyFrame:
 
 def filter_by_quality_heuristics(
     lf: pl.LazyFrame,
-    min_sections: int = 2, 
-    max_section_perc: float = 80.0
+    min_sections: int = 2,
+    max_section_perc: float = 80.0,
+    cutoff_strategy: str = "fixed",
+    iqr_multiplier: float = 0.25,
+    percentile_cutoff: float = 0.75,
 ) -> pl.LazyFrame:
     """
-    Filters the dataset based on several quality and structure heuristics.
+    Filters papers using section-count and largest-section quality checks.
 
-    Args:
-        lf: The LazyFrame with calculated section proportions.
-        min_sections: The minimum number of unique sections a paper must have.
-        max_section_perc: The maximum percentage of the paper that any single
-                          section can occupy.
+    cutoff_strategy options:
+        fixed:
+            Use max_section_perc directly.
 
-    Returns:
-        The final, filtered LazyFrame.
+        iqr:
+            Compute the cutoff from this input data as:
+                Q3 + iqr_multiplier * IQR
+
+        percentile:
+            Compute the cutoff from this input data as:
+                quantile(percentile_cutoff)
+
+    Important:
+        The cutoff is computed over relevant sections only.
     """
-    print(f"⏳ Filtering papers with quality heuristics (min_sections = {min_sections - 1}, max_perc = {max_section_perc})...")
+    relevant_lf = lf.filter(pl.col("sec_label_extended").is_in(relevant_sections))
 
-    return lf.filter(
-        # Paper must have more than (min_sections - 1) unique section types
-        (pl.col("sec_label_extended").n_unique().over("corpusid") >= min_sections) &
-        
-        # The single largest section must not exceed the max percentage
-        (pl.col("perc_of_new_total").max().over("corpusid") <= max_section_perc) &
+    paper_scores = (
+        relevant_lf
+        .with_columns(
+            paper_max_section_perc=pl.col("perc_of_new_total").max().over("corpusid")
+        )
+        .select("corpusid", "paper_max_section_perc")
+        .unique()
+    )
 
-        # The section type must be one of the relevant sections
-        (pl.col("sec_label_extended").is_in(relevant_sections))
+    if cutoff_strategy == "fixed":
+        cutoff = max_section_perc
+
+    elif cutoff_strategy == "iqr":
+        stats = paper_scores.select(
+            q1=pl.col("paper_max_section_perc").quantile(0.25),
+            q3=pl.col("paper_max_section_perc").quantile(0.75),
+        ).collect().row(0, named=True)
+
+        cutoff = min(
+            100.0,
+            stats["q3"] + iqr_multiplier * (stats["q3"] - stats["q1"]),
+        )
+
+    elif cutoff_strategy == "percentile":
+        cutoff = paper_scores.select(
+            cutoff=pl.col("paper_max_section_perc").quantile(percentile_cutoff)
+        ).collect().item()
+
+    else:
+        raise ValueError("cutoff_strategy must be one of: fixed, iqr, percentile")
+
+    print(
+        "Filtering papers with quality heuristics "
+        f"(min_sections={min_sections}, cutoff_strategy={cutoff_strategy}, "
+        f"largest_section_cutoff={cutoff:.2f})"
+    )
+
+    return (
+        relevant_lf
+        .with_columns(
+            paper_section_count=pl.col("sec_label_extended").n_unique().over("corpusid"),
+            paper_max_section_perc=pl.col("perc_of_new_total").max().over("corpusid"),
+        )
+        .filter(
+            (pl.col("paper_section_count") >= min_sections)
+            & (pl.col("paper_max_section_perc") <= cutoff)
+        )
+        .drop("paper_section_count", "paper_max_section_perc")
     )
 
 # --- Main Execution ---
@@ -815,8 +863,12 @@ def main(
     output_dir: str,
     n_rows: int | None = None,
     min_sections: int = 2,
-    max_section_perc: float = 80.0
+    max_section_perc: float = 80.0,
+    cutoff_strategy: str = "fixed",
+    iqr_multiplier: float = 0.25,
+    percentile_cutoff: float = 0.75,
 ):
+
     """
     Main function to orchestrate the pipeline for a single input file.
     """
@@ -866,7 +918,10 @@ def main(
     filtered_lf = filter_by_quality_heuristics(
         pl.scan_parquet(aggregated_path),
         min_sections=min_sections,
-        max_section_perc=max_section_perc
+        max_section_perc=max_section_perc,
+        cutoff_strategy=cutoff_strategy,
+        iqr_multiplier=iqr_multiplier,
+        percentile_cutoff=percentile_cutoff,
     )
 
     print(f"💾 Saving final filtered results to: {filtered_path}")
@@ -899,13 +954,34 @@ if __name__ == "__main__":
         default=80.0, 
         help="Filter out papers where the largest section exceeds this percentage of the total. Default: 80.0."
     )
+    parser.add_argument(
+        "--cutoff_strategy",
+        choices=["fixed", "iqr", "percentile"],
+        default="fixed",
+        help="How to determine the largest-section cutoff. Default: fixed.",
+    )
+    parser.add_argument(
+        "--iqr_multiplier",
+        type=float,
+        default=0.25,
+        help="Multiplier for Q3 + multiplier*IQR when --cutoff_strategy=iqr. Default: 0.25.",
+    )
+    parser.add_argument(
+        "--percentile_cutoff",
+        type=float,
+        default=0.75,
+        help="Quantile for --cutoff_strategy=percentile. Example: 0.75 for p75.",
+    )
 
     args = parser.parse_args()
     
     main(
-        input_path=args.input, 
-        output_dir=args.output_dir, 
+        input_path=args.input,
+        output_dir=args.output_dir,
         n_rows=args.rows,
         min_sections=args.min_sections,
-        max_section_perc=args.max_perc
+        max_section_perc=args.max_perc,
+        cutoff_strategy=args.cutoff_strategy,
+        iqr_multiplier=args.iqr_multiplier,
+        percentile_cutoff=args.percentile_cutoff,
     )
